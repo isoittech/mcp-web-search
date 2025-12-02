@@ -39,6 +39,21 @@ const searchRequest = {
   }
 };
 
+// Send fetch request
+const fetchRequest = {
+  jsonrpc: '2.0',
+  id: 4,
+  method: 'tools/call',
+  params: {
+    name: 'fetch',
+    arguments: {
+      url: 'https://example.com',
+      max_bytes: 200000,
+      timeout_ms: 15000
+    }
+  }
+};
+
 let responseCount = 0;
 
 server.stdout.on('data', (data) => {
@@ -71,6 +86,10 @@ setTimeout(() => {
 setTimeout(() => {
   server.stdin.write(JSON.stringify(searchRequest) + '\n');
 }, 300);
+
+setTimeout(() => {
+  server.stdin.write(JSON.stringify(fetchRequest) + '\n');
+}, 400);
 
 setTimeout(() => {
   server.kill();

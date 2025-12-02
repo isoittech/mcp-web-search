@@ -10,11 +10,23 @@ import {
 import axios, { AxiosInstance } from 'axios';
 import * as cheerio from 'cheerio';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import { TextDecoder } from 'node:util';
 
 interface SearchResult {
   title: string;
   url: string;
   description: string;
+}
+
+interface FetchResult {
+  url: string;
+  final_url: string;
+  status: number;
+  content_type: string | null;
+  encoding: string | null;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+  truncated: boolean;
 }
 
 /**
@@ -68,6 +80,19 @@ const isValidSearchArgs = (args: any): args is { query: string; limit?: number }
   typeof args.query === 'string' &&
   (args.limit === undefined || typeof args.limit === 'number');
 
+const isValidFetchArgs = (args: any): args is {
+  url: string;
+  max_bytes?: number;
+  timeout_ms?: number;
+  follow_redirects?: boolean;
+} =>
+  typeof args === 'object' &&
+  args !== null &&
+  typeof args.url === 'string' &&
+  (args.max_bytes === undefined || typeof args.max_bytes === 'number') &&
+  (args.timeout_ms === undefined || typeof args.timeout_ms === 'number') &&
+  (args.follow_redirects === undefined || typeof args.follow_redirects === 'boolean');
+
 class WebSearchServer {
   private server: Server;
 
@@ -116,50 +141,100 @@ class WebSearchServer {
             required: ['query'],
           },
         },
+        {
+          name: 'fetch',
+          description: 'Fetch the contents of a URL over HTTP(S)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'URL to fetch',
+              },
+              max_bytes: {
+                type: 'number',
+                description:
+                  'Maximum number of bytes to fetch (default: 200000)',
+              },
+              timeout_ms: {
+                type: 'number',
+                description:
+                  'Request timeout in milliseconds (default: 15000)',
+              },
+              follow_redirects: {
+                type: 'boolean',
+                description:
+                  'Whether to follow HTTP redirects (default: true)',
+              },
+            },
+            required: ['url'],
+          },
+        },
       ],
     }));
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      if (request.params.name !== 'search') {
-        throw new McpError(
-          ErrorCode.MethodNotFound,
-          `Unknown tool: ${request.params.name}`
-        );
+      const toolName = request.params.name;
+
+      if (toolName === 'search') {
+        if (!isValidSearchArgs(request.params.arguments)) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            'Invalid search arguments'
+          );
+        }
+
+        const query = request.params.arguments.query;
+        const limit = Math.min(request.params.arguments.limit || 5, 10);
+
+        try {
+          const results = await this.performSearch(query, limit);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(results, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : JSON.stringify(error);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Search error: ${message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
       }
 
-      if (!isValidSearchArgs(request.params.arguments)) {
-        throw new McpError(
-          ErrorCode.InvalidParams,
-          'Invalid search arguments'
-        );
-      }
+      if (toolName === 'fetch') {
+        if (!isValidFetchArgs(request.params.arguments)) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            'Invalid fetch arguments'
+          );
+        }
 
-      const query = request.params.arguments.query;
-      const limit = Math.min(request.params.arguments.limit || 5, 10);
-
-      try {
-        const results = await this.performSearch(query, limit);
+        const result = await this.fetchUrl(request.params.arguments);
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(results, null, 2),
+              text: JSON.stringify(result, null, 2),
             },
           ],
-        };
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : JSON.stringify(error);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Search error: ${message}`,
-            },
-          ],
-          isError: true,
         };
       }
+
+      throw new McpError(
+        ErrorCode.MethodNotFound,
+        `Unknown tool: ${request.params.name}`
+      );
     });
   }
 
@@ -213,6 +288,122 @@ class WebSearchServer {
           description: error instanceof Error ? error.message : 'Unknown error',
         },
       ];
+    }
+  }
+
+  private async fetchUrl(args: {
+    url: string;
+    max_bytes?: number;
+    timeout_ms?: number;
+    follow_redirects?: boolean;
+  }): Promise<FetchResult> {
+    const {
+      url,
+      max_bytes = 200000,
+      timeout_ms = 15000,
+      follow_redirects = true,
+    } = args;
+
+    const maxBytes =
+      typeof max_bytes === 'number' && max_bytes > 0 ? max_bytes : 200000;
+
+    try {
+      const response = await httpClient.get(url, {
+        responseType: 'arraybuffer',
+        timeout: timeout_ms,
+        maxRedirects: follow_redirects ? 5 : 0,
+        // We want to capture even non-2xx responses
+        validateStatus: () => true,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+            '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Accept: '*/*',
+        },
+      });
+
+      const rawContentType = response.headers['content-type'];
+      const contentType = Array.isArray(rawContentType)
+        ? rawContentType[0]
+        : rawContentType || null;
+
+      let encoding: string | null = null;
+      if (contentType && typeof contentType === 'string') {
+        const match = contentType.match(/charset=([^;]+)/i);
+        if (match) {
+          encoding = match[1].trim().toLowerCase();
+        }
+      }
+
+      const buffer = Buffer.from(response.data as ArrayBufferLike);
+      let truncated = false;
+      let limitedBuffer = buffer;
+
+      if (buffer.byteLength > maxBytes) {
+        limitedBuffer = buffer.subarray(0, maxBytes);
+        truncated = true;
+      }
+
+      const ct = contentType ? contentType.toLowerCase() : '';
+      const isBinary =
+        /^image\//.test(ct) ||
+        /^audio\//.test(ct) ||
+        /^video\//.test(ct) ||
+        /^application\/(pdf|zip|x-)/.test(ct) ||
+        ct === 'application/octet-stream';
+
+      let body = '';
+
+      if (isBinary) {
+        body = 'Unsupported content-type';
+      } else {
+        const charset = encoding || 'utf-8';
+        try {
+          const decoder = new TextDecoder(charset);
+          body = decoder.decode(limitedBuffer);
+        } catch {
+          const fallbackDecoder = new TextDecoder('utf-8');
+          body = fallbackDecoder.decode(limitedBuffer);
+          if (!encoding) {
+            encoding = 'utf-8';
+          }
+        }
+      }
+
+      let finalUrl = url;
+      const anyRequest = response.request as any;
+      if (anyRequest?.res?.responseUrl) {
+        finalUrl = anyRequest.res.responseUrl;
+      } else if (response.config?.url) {
+        finalUrl = response.config.url;
+      }
+
+      const fetchResult: FetchResult = {
+        url,
+        final_url: finalUrl,
+        status: response.status,
+        content_type: contentType,
+        encoding,
+        headers: response.headers as Record<string, string | string[] | undefined>,
+        body,
+        truncated,
+      };
+
+      return fetchResult;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : JSON.stringify(error);
+      const fetchResult: FetchResult = {
+        url: args.url,
+        final_url: args.url,
+        status: 0,
+        content_type: null,
+        encoding: null,
+        headers: {},
+        body: message,
+        truncated: false,
+      };
+      return fetchResult;
     }
   }
 
