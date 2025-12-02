@@ -1,0 +1,23 @@
+services:
+  # Python FastMCP SSE web-search server (uvicorn-based)
+  web-search-mcp:
+    build: .
+    container_name: web-search-mcp
+    environment:
+      # PORT is the listening port for uvicorn inside the container
+      - PORT=8000
+      # If needed, you can specify proxy settings here
+      # - HTTP_PROXY=
+      # - HTTPS_PROXY=
+      # - NO_PROXY=
+    ports:
+      # Map host port 9999 to container port 8000
+      # LibreChat can access the SSE endpoint at http://host.docker.internal:9999/sse
+      - "9999:8000"
+    restart: unless-stopped
+    # Optional: add resource limits or logging options here
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "0.50"
+    #       memory: "512M"
