@@ -46,6 +46,106 @@ For Claude Desktop:
 }
 ```
 
+## Docker
+
+You can also run this MCP server inside a Docker container.
+
+### Build image
+
+```bash
+docker build -t <something>/web-search-mcp .
+```
+
+### Run locally for testing
+
+This will start the MCP server on stdio inside the container:
+
+```bash
+docker run --rm -i <something>/web-search-mcp
+```
+
+### Use from MCP clients via Docker
+
+For VSCode (Claude Dev Extension):
+
+```jsonc
+{
+  "mcpServers": {
+    "web-search": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        // Forward proxy settings from the host environment into the container
+        "-e",
+        "HTTP_PROXY",
+        "-e",
+        "HTTPS_PROXY",
+        "<something>/web-search-mcp"
+      ]
+    }
+  }
+}
+```
+
+For Claude Desktop:
+
+```jsonc
+{
+  "mcpServers": {
+    "web-search": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        // Forward proxy settings from the host environment into the container
+        "-e",
+        "HTTP_PROXY",
+        "-e",
+        "HTTPS_PROXY",
+        "<something>/web-search-mcp"
+      ]
+    }
+  }
+}
+```
+
+## Proxy support
+
+This server supports outbound HTTP(S) requests via a corporate proxy.
+
+Proxy configuration is taken from standard environment variables:
+
+- `HTTPS_PROXY` / `https_proxy`
+- `HTTP_PROXY` / `http_proxy`
+- `NO_PROXY` / `no_proxy` (domains that should not be proxied; handled by the HTTP stack / proxy agent)
+
+If `HTTPS_PROXY` or `HTTP_PROXY` is set, the server will route all DuckDuckGo requests through that proxy using a CONNECT tunnel (via [`https-proxy-agent`](package.json:19)).
+
+### Example: local Node execution with proxy
+
+```bash
+export HTTPS_PROXY=http://pxoy-server
+export HTTP_PROXY=http://pxoy-server
+# NO_PROXY can be set as needed, e.g.:
+# export NO_PROXY=localhost,127.0.0.1
+
+node build/index.js
+```
+
+### Example: Docker with proxy
+
+```bash
+docker run --rm -i \
+  -e HTTPS_PROXY=http://pxoy-server \
+  -e HTTP_PROXY=http://pxoy-server \
+  <something>/web-search-mcp
+```
+
+In MCP client configurations (VSCode, Claude Desktop, etc.), you can forward the proxy variables from the host shell into the container by passing `-e HTTP_PROXY` / `-e HTTPS_PROXY` in the `args` array.
+
 ## Usage
 
 The server provides a single tool named `search` that accepts the following parameters:
@@ -82,11 +182,11 @@ Example response:
 
 ## Limitations
 
-Since this tool uses web scraping of Google search results, there are some important limitations to be aware of:
+Since this tool uses web scraping of DuckDuckGo search results, there are some important limitations to be aware of:
 
 3. **Legal Considerations**:
    - This tool is intended for personal use
-   - Respect Google's terms of service
+   - Respect DuckDuckGo's terms of service and robots.txt
 
 ## Contributing
 
