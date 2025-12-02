@@ -150,7 +150,11 @@ In MCP client configurations (VSCode, Claude Desktop, etc.), you can forward the
 
 ## Usage
 
-The server provides a single tool named `search` that accepts the following parameters:
+The server provides two tools: `search` and `fetch`.
+
+### search
+
+The `search` tool accepts the following parameters:
 
 ```typescript
 {
@@ -180,6 +184,51 @@ Example response:
     "description": "Description of the search result..."
   }
 ]
+```
+
+### fetch
+
+The `fetch` tool retrieves the raw contents of a URL over HTTP(S).
+
+Parameters:
+
+```jsonc
+{
+  "url": "https://example.com",  // Required: URL to fetch
+  "max_bytes": 200000,           // Optional: maximum number of bytes to read (default: 200000)
+  "timeout_ms": 15000,           // Optional: timeout in milliseconds (default: 15000)
+  "follow_redirects": true       // Optional: follow HTTP redirects (default: true)
+}
+```
+
+Example usage:
+```typescript
+use_mcp_tool({
+  server_name: "web-search",
+  tool_name: "fetch",
+  arguments: {
+    url: "https://example.com",
+    max_bytes: 200000,
+    timeout_ms: 15000
+  }
+})
+```
+
+Example response:
+```json
+{
+  "url": "https://example.com",
+  "final_url": "https://www.example.com/",
+  "status": 200,
+  "content_type": "text/html; charset=UTF-8",
+  "encoding": "utf-8",
+  "headers": {
+    "content-type": "text/html; charset=UTF-8",
+    "date": "Tue, 02 Dec 2025 00:00:00 GMT"
+  },
+  "body": "<!doctype html>\\n<html>...</html>",
+  "truncated": false
+}
 ```
 
 ## Limitations
