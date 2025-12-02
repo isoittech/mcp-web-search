@@ -7,13 +7,60 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
-import path from 'path';
+import axios, { AxiosInstance } from 'axios';
+import * as cheerio from 'cheerio';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 interface SearchResult {
   title: string;
   url: string;
   description: string;
 }
+
+/**
+ * Create an Axios HTTP client that optionally uses an HTTP(S) proxy.
+ *
+ * Proxy configuration is taken from standard environment variables:
+ *   - HTTPS_PROXY / https_proxy
+ *   - HTTP_PROXY / http_proxy
+ *   - NO_PROXY / no_proxy (handled by the proxy itself, not here)
+ *
+ * If no proxy variable is set or the value is invalid, a default Axios
+ * instance without explicit proxy configuration is returned.
+ */
+const createHttpClient = (): AxiosInstance => {
+  const proxyEnv =
+    process.env.HTTPS_PROXY ||
+    process.env.https_proxy ||
+    process.env.HTTP_PROXY ||
+    process.env.http_proxy;
+
+  // No proxy defined: use default Axios instance (it may still honor NO_PROXY).
+  if (!proxyEnv) {
+    return axios;
+  }
+
+  try {
+    // Use https-proxy-agent so that HTTPS requests go through CONNECT,
+    // similar to how curl behaves with HTTPS_PROXY/HTTP_PROXY.
+    const agent = new HttpsProxyAgent(proxyEnv);
+
+    return axios.create({
+      // Disable Axios' built-in proxy handling in favor of a custom agent.
+      proxy: false,
+      httpsAgent: agent,
+    });
+  } catch (error) {
+    console.error(
+      'Invalid proxy configuration in HTTPS_PROXY/HTTP_PROXY:',
+      error
+    );
+    return axios;
+  }
+};
+
+// Shared HTTP client used for all outbound requests
+const httpClient = createHttpClient();
 
 const isValidSearchArgs = (args: any): args is { query: string; limit?: number } =>
   typeof args === 'object' &&
@@ -101,37 +148,71 @@ class WebSearchServer {
           ],
         };
       } catch (error) {
-        if (error instanceof McpError) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Search error: ${error.message}`,
-              },
-            ],
-            isError: true,
-          };
-        }
-        throw error;
+        const message =
+          error instanceof Error ? error.message : JSON.stringify(error);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Search error: ${message}`,
+            },
+          ],
+          isError: true,
+        };
       }
     });
   }
 
   private async performSearch(query: string, limit: number): Promise<SearchResult[]> {
-    // Use Selenium for real browser automation
-    // This will launch Chrome and perform a real search
-    const seleniumPath = path.resolve(__dirname, 'selenium-search.js');
-    const { duckDuckGoSearch } = require(seleniumPath);
+    // Scrape DuckDuckGo HTML search results via HTTP (no Selenium dependency)
     try {
-      const results = await duckDuckGoSearch(query, limit);
+      const response = await httpClient.get('https://html.duckduckgo.com/html/', {
+        params: {
+          q: query,
+          s: '0',
+        },
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+            '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          // Force plain response over proxy to avoid Squid ERR_READ_ERROR on compressed payloads
+          'Accept-Encoding': 'identity',
+          Referer: 'https://duckduckgo.com/',
+        },
+        timeout: 15000,
+      });
+
+      const $ = cheerio.load(response.data);
+      const results: SearchResult[] = [];
+
+      $('.result').each((i, el) => {
+        if (results.length >= limit) {
+          return false; // stop iteration
+        }
+        const $el = $(el);
+        const title = $el.find('.result__title a').text().trim();
+        const url = $el.find('.result__title a').attr('href') || '';
+        const description = $el.find('.result__snippet').text().trim();
+
+        if (title && url) {
+          results.push({ title, url, description });
+        }
+        return undefined;
+      });
+
       return results;
     } catch (error) {
-      console.error('Selenium search error:', error);
-      return [{
-        title: 'Search error',
-        url: '',
-        description: error instanceof Error ? error.message : 'Unknown error',
-      }];
+      console.error('DuckDuckGo search error:', error);
+      return [
+        {
+          title: 'Search error',
+          url: '',
+          description: error instanceof Error ? error.message : 'Unknown error',
+        },
+      ];
     }
   }
 
