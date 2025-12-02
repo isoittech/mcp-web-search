@@ -83,7 +83,8 @@ For VSCode (Claude Dev Extension):
         "-e",
         "HTTPS_PROXY",
         "<something>/web-search-mcp"
-      ]
+      ],
+      "env": { "HTTP_PROXY": "xxxx", "HTTPS_PROXY": "xxx" },
     }
   }
 }
@@ -106,7 +107,8 @@ For Claude Desktop:
         "-e",
         "HTTPS_PROXY",
         "<something>/web-search-mcp"
-      ]
+      ],
+      "env": { "HTTP_PROXY": "xxxx", "HTTPS_PROXY": "xxx" },
     }
   }
 }
