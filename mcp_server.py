@@ -108,8 +108,6 @@ def http_fetch(
 ) -> Dict[str, Any]:
     """
     Fetch a URL with basic size limiting and content-type handling.
-
-    Node 版の fetchUrl() 関数に対応する挙動を Python で再現する。
     """
     timeout = timeout_ms / 1000.0
     client = _create_http_client()
@@ -201,9 +199,42 @@ mcp = FastMCP("python-web-search")
 @mcp.tool()
 def search(query: str, limit: Optional[int] = None) -> Dict[str, Any]:
     """
-    Web search tool (DuckDuckGo HTML-based).
+    Perform a web search using DuckDuckGo's HTML interface.
 
-    This plays the same role as the former Node MCP server's `search` tool.
+    This tool is intended for MCP clients that need to look up information on the
+    public web without any API keys. It returns a small list of matching pages
+    with titles, URLs, and short snippets. Typical usage is to call this tool
+    first to discover relevant pages, then use the "fetch" tool to read
+    a specific URL in more detail.
+
+    Parameters
+    ----------
+    query:
+        Search query in natural language or keywords.
+    limit:
+        Optional maximum number of results to return. If omitted or invalid,
+        a default of 5 is used.
+
+    Returns
+    -------
+    Dict[str, Any]:
+        A dictionary with a single key "results". The value is a list of
+        result objects:
+          - title: Page title.
+          - url: Resolved HTTP(S) URL.
+          - description: Short snippet from the search result (may be empty).
+
+    Notes
+    -----
+    - This tool does not fetch full page content; use "fetch" for that.
+    - When presenting results in a browser or graphical UI, it is recommended
+      to show at least the title and URL for each result (and optionally the
+      description/snippet) so that users can clearly see what pages will be
+      opened.
+    - Results are scraped from DuckDuckGo HTML and may be incomplete or
+      occasionally missing snippets.
+    - The ranking and freshness are controlled by DuckDuckGo and are
+      best-effort only.
     """
     effective_limit = limit if isinstance(limit, int) and limit > 0 else 5
     results = duckduckgo_search(query=query, limit=effective_limit)
@@ -218,9 +249,50 @@ def fetch(
     follow_redirects: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
-    HTTP fetch tool.
+    Fetch the contents of a single HTTP(S) URL.
 
-    This plays the same role as the former Node MCP server's `fetch` tool.
+    This tool is intended for MCP clients that need to retrieve the body,
+    status code, headers, and final URL after redirects for a given resource.
+    A common pattern is to call the "search" tool to discover candidate
+    URLs, then use this tool to read one of those URLs in detail.
+
+    Parameters
+    ----------
+    url:
+        Target HTTP(S) URL to fetch.
+    max_bytes:
+        Optional hard limit on the number of response bytes to read. Defaults
+        to 200_000 bytes. Responses larger than this limit are truncated and
+        reported via the "truncated" flag.
+    timeout_ms:
+        Optional request timeout in milliseconds. Defaults to 15_000 ms.
+    follow_redirects:
+        Whether to follow HTTP redirects. Defaults to True.
+
+    Returns
+    -------
+    Dict[str, Any]:
+        A dictionary with keys:
+          - url: The original URL requested.
+          - final_url: The final URL after redirects (if any).
+          - status: HTTP status code (0 on network errors).
+          - content_type: Raw Content-Type header value, if present.
+          - encoding: Detected character encoding for text responses.
+          - headers: Response headers as a dictionary.
+          - body: Response body as text, or an error/placeholder message for
+            unsupported binary content-types.
+          - truncated: True if the response body was cut off due to max_bytes.
+
+    Notes
+    -----
+    - Binary content (images, most application/* types, etc.) is not returned
+      as raw bytes; instead, a placeholder string is used in "body".
+    - When presenting fetched content in a browser or graphical UI, it is
+      recommended to clearly display at least the final_url (and optionally
+      the HTTP status and content_type) so that users can see which site is
+      being accessed before opening or rendering the page body.
+    - Outbound requests honour standard HTTP(S)_PROXY and NO_PROXY environment
+      variables via the underlying HTTPX client.
     """
     effective_max_bytes = max_bytes if isinstance(max_bytes, int) and max_bytes > 0 else 200_000
     effective_timeout_ms = timeout_ms if isinstance(timeout_ms, int) and timeout_ms > 0 else 15_000
