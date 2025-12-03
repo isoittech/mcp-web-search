@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import os
 from typing import Any, Dict, List, Optional
+import logging
 
 import httpx
 from bs4 import BeautifulSoup
 from mcp.server.fastmcp import FastMCP
 import uvicorn
 
+
+logger = logging.getLogger("python-web-search-mcp")
+
+if not logger.handlers:
+    level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, level, logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 
 # --- DuckDuckGo HTML search helpers -------------------------------------------------
 
@@ -29,12 +39,16 @@ def duckduckgo_search(query: str, limit: int = 5) -> List[Dict[str, str]]:
     - Endpoint: https://html.duckduckgo.com/html/
     - User-Agent / Accept headers are set appropriately to look like a real browser
     """
+    logger.info("duckduckgo_search: query=%r, limit=%r", query, limit)
+
     if limit <= 0:
+        logger.warning("duckduckgo_search: non-positive limit, returning empty list")
         return []
 
     client = _create_http_client()
 
     try:
+        logger.debug("duckduckgo_search: sending request to DuckDuckGo HTML endpoint")
         resp = client.get(
             "https://html.duckduckgo.com/html/",
             params={"q": query, "s": "0"},
@@ -57,6 +71,7 @@ def duckduckgo_search(query: str, limit: int = 5) -> List[Dict[str, str]]:
         )
         resp.raise_for_status()
     except Exception as e:  # noqa: BLE001
+        logger.exception("duckduckgo_search: HTTP request failed: %s", e)
         # Keep error handling simple here; the MCP tool will return this as a message.
         return [
             {
@@ -69,9 +84,17 @@ def duckduckgo_search(query: str, limit: int = 5) -> List[Dict[str, str]]:
         client.close()
 
     soup = BeautifulSoup(resp.text, "html.parser")
+
+    nodes = soup.select(".result")
+    logger.info("duckduckgo_search: found %d .result nodes", len(nodes))
+    if not nodes:
+        # Log a small snippet of the raw HTML to debug selector/layout issues.
+        snippet = resp.text[:1000].replace("\n", " ")
+        logger.debug("duckduckgo_search: no .result nodes; html snippet=%r", snippet)
+
     results: List[Dict[str, str]] = []
 
-    for result in soup.select(".result"):
+    for idx, result in enumerate(nodes):
         if len(results) >= limit:
             break
 
@@ -79,6 +102,7 @@ def duckduckgo_search(query: str, limit: int = 5) -> List[Dict[str, str]]:
         snippet_el = result.select_one(".result__snippet")
 
         if not a:
+            logger.debug("duckduckgo_search: skipping result index %d (no .result__title a)", idx)
             continue
 
         title = (a.get_text() or "").strip()
@@ -86,6 +110,12 @@ def duckduckgo_search(query: str, limit: int = 5) -> List[Dict[str, str]]:
         description = (snippet_el.get_text() if snippet_el else "").strip()
 
         if title and url:
+            logger.debug(
+                "duckduckgo_search: accepted result index %d title=%r url=%r",
+                idx,
+                title,
+                url,
+            )
             results.append(
                 {
                     "title": title,
@@ -93,7 +123,15 @@ def duckduckgo_search(query: str, limit: int = 5) -> List[Dict[str, str]]:
                     "description": description,
                 }
             )
+        else:
+            logger.debug(
+                "duckduckgo_search: dropping result index %d due to empty title/url (title=%r, url=%r)",
+                idx,
+                title,
+                url,
+            )
 
+    logger.info("duckduckgo_search: returning %d results", len(results))
     return results
 
 
@@ -109,16 +147,26 @@ def http_fetch(
     """
     Fetch a URL with basic size limiting and content-type handling.
     """
+    logger.info(
+        "http_fetch: url=%r, max_bytes=%r, timeout_ms=%r, follow_redirects=%r",
+        url,
+        max_bytes,
+        timeout_ms,
+        follow_redirects,
+    )
+
     timeout = timeout_ms / 1000.0
     client = _create_http_client()
 
     try:
+        logger.debug("http_fetch: sending HTTP GET request")
         resp = client.get(
             url,
             timeout=timeout,
             follow_redirects=follow_redirects,
         )
     except Exception as e:  # noqa: BLE001
+        logger.exception("http_fetch: HTTP request failed: %s", e)
         return {
             "url": url,
             "final_url": url,
@@ -149,6 +197,11 @@ def http_fetch(
     if len(raw_bytes) > max_bytes:
         raw_bytes = raw_bytes[:max_bytes]
         truncated = True
+        logger.warning(
+            "http_fetch: response body truncated at %d bytes (max_bytes=%d)",
+            len(raw_bytes),
+            max_bytes,
+        )
 
     ct_lower = (content_type or "").lower()
     is_binary = (
@@ -162,12 +215,17 @@ def http_fetch(
     )
 
     if is_binary:
+        logger.info("http_fetch: binary content-type detected: %r", content_type)
         body = "Unsupported content-type"
     else:
         charset = encoding or "utf-8"
         try:
             body = raw_bytes.decode(charset, errors="replace")
         except Exception:  # noqa: BLE001
+            logger.exception(
+                "http_fetch: failed to decode body with charset=%r, falling back to utf-8",
+                charset,
+            )
             body = raw_bytes.decode("utf-8", errors="replace")
             if not encoding:
                 encoding = "utf-8"
@@ -176,6 +234,15 @@ def http_fetch(
 
     # Convert httpx headers to a JSON-friendly dict
     headers: Dict[str, Any] = dict(resp.headers)
+
+    logger.info(
+        "http_fetch: status=%d, final_url=%r, content_type=%r, truncated=%r, is_binary=%r",
+        resp.status_code,
+        final_url,
+        content_type,
+        truncated,
+        is_binary,
+    )
 
     return {
         "url": url,
